@@ -1,0 +1,28 @@
+.bt-indicator-box {
+    spacing: 5px;
+}
+
+.bt-device-entry {
+    spacing: 2px;
+    padding: 0 1px;
+}
+
+.bt-device-icon {
+    icon-size: 13px;
+}
+
+.bt-battery-bar {
+    width: 3px;
+    height: 13px;
+    border-radius: 1px;
+}
+
+.bt-tooltip {
+    background-color: rgba(0, 0, 0, 0.85);
+    color: #ffffff;
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    border-radius: 6px;
+    padding: 4px 8px;
+    font-size: 9pt;
+    text-align: center;
+}

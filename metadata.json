@@ -1,0 +1,9 @@
+{
+  "uuid": "bluetooth-devices-indicator@guido.local",
+  "name": "Bluetooth Devices Indicator",
+  "description": "Shows every connected Bluetooth device in the top panel as a type icon (headphones, mouse, keyboard, …) with a battery-level bar next to it. Hover a device to see its name.",
+  "version": 1,
+  "shell-version": ["50", "49", "48", "47", "46", "45"],
+  "settings-schema": null,
+  "url": ""
+}
