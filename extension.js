@@ -90,19 +90,34 @@ class DeviceEntry extends St.BoxLayout {
             style_class: 'bt-device-entry',
             reactive: true,
             track_hover: true,
+            x_align: Clutter.ActorAlign.CENTER,
             y_align: Clutter.ActorAlign.CENTER,
         });
         setHorizontal(this);
+
+        // Always-horizontal wrapper so icon + bar stay side-by-side
+        // regardless of the parent panel orientation (horizontal or vertical).
+        // Use St.Widget + explicit Clutter.BoxLayout to prevent the panel from
+        // overriding the orientation through St.BoxLayout's internal logic.
+        this._innerBox = new St.Widget({
+            layout_manager: new Clutter.BoxLayout({
+                orientation: Clutter.Orientation.HORIZONTAL,
+                spacing: 2,
+            }),
+            x_align: Clutter.ActorAlign.CENTER,
+            y_align: Clutter.ActorAlign.CENTER,
+        });
+        this.add_child(this._innerBox);
 
         this._icon = new St.Icon({
             style_class: 'bt-device-icon',
             icon_size: 13,
             y_align: Clutter.ActorAlign.CENTER,
         });
-        this.add_child(this._icon);
+        this._innerBox.add_child(this._icon);
 
         this._bar = new BatteryBar(0);
-        this.add_child(this._bar);
+        this._innerBox.add_child(this._bar);
 
         this._label = '';
         this._tooltip = null;
