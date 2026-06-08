@@ -14,6 +14,11 @@ const PROPS_IFACE = 'org.freedesktop.DBus.Properties';
 const DEVICE_IFACE = 'org.bluez.Device1';
 const BATTERY_IFACE = 'org.bluez.Battery1';
 
+const UPOWER_BUS = 'org.freedesktop.UPower';
+const UPOWER_PATH = '/org/freedesktop/UPower';
+const UPOWER_IFACE = 'org.freedesktop.UPower';
+const UPOWER_DEVICE_IFACE = 'org.freedesktop.UPower.Device';
+
 // Force a BoxLayout to lay its children out left-to-right. Recent GNOME Shell
 // defaults St.BoxLayout to a vertical orientation, and the actor-level
 // `orientation`/`vertical` properties are deprecated — the reliable lever is
@@ -29,6 +34,19 @@ function setHorizontal(box) {
             // Nothing else to try; leave the default orientation.
         }
     }
+}
+
+// Extract a normalised uppercase MAC address from either a BlueZ object path
+// (/org/bluez/hci0/dev_34_B1_EB_EB_F3_E5) or a HID native-path
+// (hid-34:b1:eb:eb:f3:e5-battery).  Returns null if no MAC is found.
+function macFromPath(path) {
+    let m = path.match(/dev_([0-9A-Fa-f]{2}(?:_[0-9A-Fa-f]{2}){5})$/);
+    if (m)
+        return m[1].replace(/_/g, ':').toUpperCase();
+    m = path.match(/([0-9A-Fa-f]{2}(?::[0-9A-Fa-f]{2}){5})/);
+    if (m)
+        return m[1].toUpperCase();
+    return null;
 }
 
 // Battery thresholds → colour. Returns [r, g, b].
@@ -237,21 +255,27 @@ class BluetoothDevicesIndicator extends PanelMenu.Button {
     }
 
     _subscribeSignals() {
-        const sub = (iface, signal, cb) =>
+        const sub = (bus, iface, signal, cb) =>
             this._bus.signal_subscribe(
-                BLUEZ_BUS, iface, signal, null, null,
+                bus, iface, signal, null, null,
                 Gio.DBusSignalFlags.NONE, cb);
 
         this._subscriptions.push(
-            sub(OBJ_MANAGER_IFACE, 'InterfacesAdded',
+            sub(BLUEZ_BUS, OBJ_MANAGER_IFACE, 'InterfacesAdded',
                 () => this._scheduleRefresh()),
-            sub(OBJ_MANAGER_IFACE, 'InterfacesRemoved',
+            sub(BLUEZ_BUS, OBJ_MANAGER_IFACE, 'InterfacesRemoved',
                 () => this._scheduleRefresh()),
-            sub(PROPS_IFACE, 'PropertiesChanged',
+            sub(BLUEZ_BUS, PROPS_IFACE, 'PropertiesChanged',
                 (conn, sender, path, iface, signal, params) => {
                     const [changedIface] = params.deepUnpack();
                     if (changedIface === DEVICE_IFACE ||
                         changedIface === BATTERY_IFACE)
+                        this._scheduleRefresh();
+                }),
+            sub(UPOWER_BUS, PROPS_IFACE, 'PropertiesChanged',
+                (conn, sender, path, iface, signal, params) => {
+                    const [changedIface] = params.deepUnpack();
+                    if (changedIface === UPOWER_DEVICE_IFACE)
                         this._scheduleRefresh();
                 }));
     }
@@ -269,25 +293,80 @@ class BluetoothDevicesIndicator extends PanelMenu.Button {
     }
 
     _refresh() {
+        let bluezObjects = null;
+        let upowerMap = null;
+
+        const tryRebuild = () => {
+            if (bluezObjects !== null && upowerMap !== null)
+                this._rebuild(bluezObjects, upowerMap);
+        };
+
+        // BlueZ: get all managed objects (devices + battery interfaces).
         this._bus.call(
             BLUEZ_BUS, '/', OBJ_MANAGER_IFACE, 'GetManagedObjects',
             null, new GLib.VariantType('(a{oa{sa{sv}}})'),
             Gio.DBusCallFlags.NONE, -1, null,
             (conn, res) => {
-                let reply;
                 try {
-                    reply = conn.call_finish(res);
-                } catch (e) {
-                    // BlueZ unavailable (no adapter / service down).
-                    this._rebuild({});
+                    [bluezObjects] = conn.call_finish(res).recursiveUnpack();
+                } catch (_e) {
+                    bluezObjects = {};
+                }
+                tryRebuild();
+            });
+
+        // UPower: enumerate devices, then read NativePath + Percentage for each.
+        this._bus.call(
+            UPOWER_BUS, UPOWER_PATH, UPOWER_IFACE, 'EnumerateDevices',
+            null, new GLib.VariantType('(ao)'),
+            Gio.DBusCallFlags.NONE, -1, null,
+            (conn, res) => {
+                let paths;
+                try {
+                    [paths] = conn.call_finish(res).recursiveUnpack();
+                } catch (_e) {
+                    paths = [];
+                }
+
+                if (paths.length === 0) {
+                    upowerMap = new Map();
+                    tryRebuild();
                     return;
                 }
-                const [objects] = reply.recursiveUnpack();
-                this._rebuild(objects);
+
+                const map = new Map();
+                let remaining = paths.length;
+                const done = () => {
+                    if (--remaining === 0) {
+                        upowerMap = map;
+                        tryRebuild();
+                    }
+                };
+
+                for (const devPath of paths) {
+                    this._bus.call(
+                        UPOWER_BUS, devPath, PROPS_IFACE, 'GetAll',
+                        new GLib.Variant('(s)', [UPOWER_DEVICE_IFACE]),
+                        new GLib.VariantType('(a{sv})'),
+                        Gio.DBusCallFlags.NONE, -1, null,
+                        (conn2, res2) => {
+                            try {
+                                const [props] = conn2.call_finish(res2).recursiveUnpack();
+                                const nativePath = props['NativePath'];
+                                const pct = props['Percentage'];
+                                if (nativePath !== undefined && pct !== undefined) {
+                                    const mac = macFromPath(nativePath);
+                                    if (mac)
+                                        map.set(mac, Math.round(pct));
+                                }
+                            } catch (_e) {}
+                            done();
+                        });
+                }
             });
     }
 
-    _rebuild(objects) {
+    _rebuild(objects, upowerMap) {
         // Collect connected devices in a stable order (by object path).
         const devices = [];
         for (const path of Object.keys(objects).sort()) {
@@ -297,13 +376,20 @@ class BluetoothDevicesIndicator extends PanelMenu.Button {
                 continue;
 
             const battery = ifaces[BATTERY_IFACE];
+            let percentage = null;
+            if (battery && typeof battery.Percentage === 'number') {
+                percentage = battery.Percentage;
+            } else {
+                const mac = macFromPath(path);
+                if (mac && upowerMap.has(mac))
+                    percentage = upowerMap.get(mac);
+            }
+
             devices.push({
                 path,
                 name: dev.Alias || dev.Name || 'Unknown device',
                 iconName: dev.Icon || 'bluetooth',
-                percentage: battery && typeof battery.Percentage === 'number'
-                    ? battery.Percentage
-                    : null,
+                percentage,
             });
         }
 
