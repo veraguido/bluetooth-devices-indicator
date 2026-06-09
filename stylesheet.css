@@ -1,10 +1,11 @@
 .bt-indicator-box {
     spacing: 5px;
+    padding-left: 8px;
+    padding-right: 8px;
 }
 
 .bt-device-entry {
     spacing: 2px;
-    padding: 0 1px;
 }
 
 .bt-device-icon {
