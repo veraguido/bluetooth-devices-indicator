@@ -248,6 +248,11 @@ class BluetoothDevicesIndicator extends PanelMenu.Button {
         this._subscriptions = [];
         this._refreshTimeoutId = 0;
 
+        this.connect('button-press-event', () => {
+            GLib.spawn_command_line_async('gnome-control-center bluetooth');
+            return Clutter.EVENT_STOP;
+        });
+
         // Hidden until at least one device is connected.
         this.hide();
         this._subscribeSignals();
