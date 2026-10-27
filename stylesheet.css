@@ -18,6 +18,10 @@
     border-radius: 1px;
 }
 
+.bt-menu-item-connected {
+    opacity: 0.6;
+}
+
 .bt-tooltip {
     background-color: rgba(0, 0, 0, 0.85);
     color: #ffffff;

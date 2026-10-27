@@ -6,6 +6,7 @@ import GLib from 'gi://GLib';
 
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
+import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
 import {Extension} from 'resource:///org/gnome/shell/extensions/extension.js';
 
 const BLUEZ_BUS = 'org.bluez';
@@ -234,7 +235,7 @@ class DeviceEntry extends St.BoxLayout {
 const BluetoothDevicesIndicator = GObject.registerClass(
 class BluetoothDevicesIndicator extends PanelMenu.Button {
     _init() {
-        super._init(0.0, 'Bluetooth Devices Indicator', true);
+        super._init(0.0, 'Bluetooth Devices Indicator', false);
 
         this._box = new St.BoxLayout({
             style_class: 'bt-indicator-box',
@@ -243,18 +244,20 @@ class BluetoothDevicesIndicator extends PanelMenu.Button {
         setHorizontal(this._box);
         this.add_child(this._box);
 
+        // Shown when no devices are connected.
+        this._defaultIcon = new St.Icon({
+            icon_name: 'bluetooth-symbolic',
+            style_class: 'bt-device-icon',
+            icon_size: 16,
+            y_align: Clutter.ActorAlign.CENTER,
+        });
+        this._box.add_child(this._defaultIcon);
+
         this._entries = new Map(); // device object path → DeviceEntry
         this._bus = Gio.DBus.system;
         this._subscriptions = [];
         this._refreshTimeoutId = 0;
 
-        this.connect('button-press-event', () => {
-            GLib.spawn_command_line_async('gnome-control-center bluetooth');
-            return Clutter.EVENT_STOP;
-        });
-
-        // Hidden until at least one device is connected.
-        this.hide();
         this._subscribeSignals();
         this._refresh();
     }
@@ -372,12 +375,17 @@ class BluetoothDevicesIndicator extends PanelMenu.Button {
     }
 
     _rebuild(objects, upowerMap) {
-        // Collect connected devices in a stable order (by object path).
-        const devices = [];
+        const connectedDevices = [];
+        const knownDevices = [];
+
         for (const path of Object.keys(objects).sort()) {
             const ifaces = objects[path];
             const dev = ifaces[DEVICE_IFACE];
-            if (!dev || dev.Connected !== true)
+            if (!dev)
+                continue;
+
+            // Only surface devices the user has paired with.
+            if (!dev.Paired && !dev.Connected)
                 continue;
 
             const battery = ifaces[BATTERY_IFACE];
@@ -390,16 +398,22 @@ class BluetoothDevicesIndicator extends PanelMenu.Button {
                     percentage = upowerMap.get(mac);
             }
 
-            devices.push({
+            const info = {
                 path,
                 name: dev.Alias || dev.Name || 'Unknown device',
                 iconName: dev.Icon || 'bluetooth',
                 percentage,
-            });
+                connected: dev.Connected === true,
+            };
+
+            knownDevices.push(info);
+            if (info.connected)
+                connectedDevices.push(info);
         }
 
+        // Update panel entries (connected devices only).
         const seen = new Set();
-        for (const info of devices) {
+        for (const info of connectedDevices) {
             let entry = this._entries.get(info.path);
             if (!entry) {
                 entry = new DeviceEntry();
@@ -410,7 +424,6 @@ class BluetoothDevicesIndicator extends PanelMenu.Button {
             seen.add(info.path);
         }
 
-        // Drop entries for devices that are no longer connected.
         for (const [path, entry] of this._entries) {
             if (!seen.has(path)) {
                 entry.destroy();
@@ -418,8 +431,55 @@ class BluetoothDevicesIndicator extends PanelMenu.Button {
             }
         }
 
-        // Hide the whole indicator when there's nothing to show.
-        this.visible = this._entries.size > 0;
+        // Default icon visible only when nothing is connected.
+        this._defaultIcon.visible = this._entries.size === 0;
+
+        this._rebuildMenu(knownDevices);
+    }
+
+    _rebuildMenu(devices) {
+        this.menu.removeAll();
+
+        if (devices.length === 0) {
+            const item = new PopupMenu.PopupMenuItem('No paired devices', {reactive: false});
+            this.menu.addMenuItem(item);
+        } else {
+            for (const info of devices) {
+                const item = new PopupMenu.PopupMenuItem(info.name, {
+                    reactive: !info.connected,
+                });
+
+                if (info.connected) {
+                    item.setOrnament(PopupMenu.Ornament.CHECK);
+                    item.add_style_class_name('bt-menu-item-connected');
+                } else {
+                    item.connect('activate', () => this._connectDevice(info.path));
+                }
+
+                this.menu.addMenuItem(item);
+            }
+        }
+
+        this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
+        const settingsItem = new PopupMenu.PopupMenuItem('Bluetooth Settings…');
+        settingsItem.connect('activate', () => {
+            GLib.spawn_command_line_async('gnome-control-center bluetooth');
+        });
+        this.menu.addMenuItem(settingsItem);
+    }
+
+    _connectDevice(path) {
+        this._bus.call(
+            BLUEZ_BUS, path, DEVICE_IFACE, 'Connect',
+            null, null,
+            Gio.DBusCallFlags.NONE, -1, null,
+            (conn, res) => {
+                try {
+                    conn.call_finish(res);
+                } catch (_e) {
+                    // Connection failed; a subsequent PropertiesChanged will update state.
+                }
+            });
     }
 
     destroy() {
